@@ -89,4 +89,4 @@ if __name__ == '__main__':
                             joint_goal = temp_joint_goal
                         except Exception as e:
                             pass
-                    spnav_remove_events(SPNAV_EVENT_MOTION) # clean pipeline
+                    spnav_remove_events(SPNAV_EVENT_ANY) # clean pipeline

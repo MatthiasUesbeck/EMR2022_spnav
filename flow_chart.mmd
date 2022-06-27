@@ -1,0 +1,50 @@
+%%{init: {'theme':'neutral'}}%%
+flowchart TD
+    subgraph sg_cp [compute_pose]
+        cp_start(["self.compute_pose(pre_pose, axis_values, csys)"]) --> cp_scale(do additional scaling on the input)
+        cp_scale --> cp_csys{csys?}
+        cp_csys -- tcp --> cp_tcp(compute new_pose based on movement \n in the tcp coordinate system)
+        cp_csys -- world --> cp_world(compute new_pose based on movement \n in the world coordinate system)
+        cp_tcp --> cpend(return new_pose)
+        cp_world --> cpend
+    end
+    
+    subgraph sg_spnav [spnav_thread]
+        spnav_start([Start]) --> spnav_open(open spnav)
+        spnav_open --> spnav_keep_alive{check self.app_running}
+        spnav_keep_alive -- True --> spnav_get_event(wait for spnav event)
+            spnav_get_event --> spnav_check_event_type{check event type}
+            spnav_check_event_type -- MotionEvent --> spnav_process_motion_1(get axis values of the spacenavigotor)
+                spnav_process_motion_1 --> spnav_process_motion_2(scale, swap and invert axis values \naccoording to axis setup in the GUI)
+                spnav_process_motion_2 --> spnav_process_motion_3[["new_pose = self.compute_pose(pre_pose, axis_values, csys)"]]
+                spnav_process_motion_3 --> spnav_process_motion_4(publish new_pose to moveit)
+                spnav_process_motion_4 --> spnav_process_motion_5(self.pre_pose = new_pose)
+                spnav_process_motion_5 --> spnav_keep_alive
+            spnav_check_event_type -- ButtonEvent --> spnav_button1{which button?}
+                spnav_button1 -->|left|spnav_button_plan(publish planning command to moveit)
+                spnav_button1 -- right --> spnav_button_execute(publish execute command to moveit)
+                spnav_button_plan --> spnav_button_print(print information)
+                spnav_button_execute --> spnav_button_print
+                spnav_button_print --> spnav_keep_alive
+        spnav_keep_alive -- False ---------> spnavend([End])
+    end
+    subgraph sg_main [main respectively MyUI]
+        A([Start]) --> A1(declare variable: \n self.app_running = True)
+        A1 --> B(setup publishers and subcribers)
+        B --> C[["get initial pose: \n self.pre_pose = get_current_pose()"]]
+        C --> D(setup GUI)
+        D --> E[[start spnav_thread]]
+        E --> F{check if window is closed}
+        F -- False --> F
+        F -- True --> G(self.app_running = False)
+        G --> G1(wait for spnav_thread to join)
+        G1 --> H([End])
+    end
+    %%E -.-> spnav_start
+    %%G -.-> spnav_keep_alive
+    %%spnavend -.-> G1
+    %%spnav_process_motion_5 -.-> cp_start
+    %%cpend -.-> spnav_process_motion_5
+    
+
+

@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 # EMR 2022
 # Authors: Dominik Kuesters, Jens Ludwig, Matthias Uesbeck
 # Desc:    Control a 6-DOF robot in moveit via a spacenavigator 3d mouse
@@ -48,9 +50,10 @@
 import threading
 import time 
 import sys
+import math
 
 # common 3rd party
-import numpy
+import numpy as np
 
 # 3rd party modified
 from spnav import *
@@ -104,7 +107,6 @@ class MyUI(QWidget):
         self.marker_lock = threading.Lock()
         self.prev_time = rospy.Time.now()
         self.counter = 0
-        #self.history = StatusHistory(max_length=10)
         self.pre_pose = PoseStamped()
         self.pre_pose.pose.orientation.w = 1
         self.current_planning_group_index = 0
@@ -346,25 +348,25 @@ class MyUI(QWidget):
         z_diff = signedSquare(status.z_trans) / scale 
          
         # rotation
-        scale_rot = 400
+        scale_rot = 40
         roll  = signedSquare(status.x_rot) / scale_rot
         pitch = signedSquare(status.y_rot) / scale_rot    
         yaw   = signedSquare(status.z_rot) / scale_rot 
         
-        q = numpy.array((pre_pose.pose.orientation.x,
+        q = np.array((pre_pose.pose.orientation.x,
                          pre_pose.pose.orientation.y,
                          pre_pose.pose.orientation.z,
                          pre_pose.pose.orientation.w,))
         if status.csys == 0:      # tcp
             # translation
-            local_move = numpy.array((x_diff, y_diff, z_diff, 1.0 ))            
-            xyz_move = numpy.dot(tf.transformations.quaternion_matrix(q), local_move)
-            new_pose.pose.position.x = numpy.clip(pre_pose.pose.position.x + xyz_move[0], -1, 1)
-            new_pose.pose.position.y = numpy.clip(pre_pose.pose.position.y + xyz_move[1], -1, 1)
-            new_pose.pose.position.z = numpy.clip(pre_pose.pose.position.z + xyz_move[2], -1, 1)
+            local_move = np.array((x_diff, y_diff, z_diff, 1.0 ))            
+            xyz_move = np.dot(tf.transformations.quaternion_matrix(q), local_move)
+            new_pose.pose.position.x = np.clip(pre_pose.pose.position.x + xyz_move[0], -1, 1)
+            new_pose.pose.position.y = np.clip(pre_pose.pose.position.y + xyz_move[1], -1, 1)
+            new_pose.pose.position.z = np.clip(pre_pose.pose.position.z + xyz_move[2], -1, 1)
             
             # rotation
-            diff_q = tf.transformations.quaternion_from_euler(roll, pitch, yaw)
+            diff_q = tf.transformations.quaternion_from_euler(pitch, roll, yaw)
             new_q = tf.transformations.quaternion_multiply(q, diff_q)
             new_pose.pose.orientation.x = new_q[0]
             new_pose.pose.orientation.y = new_q[1]
@@ -372,13 +374,40 @@ class MyUI(QWidget):
             new_pose.pose.orientation.w = new_q[3]        
         elif status.csys == 1:      # world  
            # translation
-            new_pose.pose.position.x = numpy.clip(pre_pose.pose.position.x + x_diff, -1, 1)
-            new_pose.pose.position.y = numpy.clip(pre_pose.pose.position.y + y_diff, -1, 1)
-            new_pose.pose.position.z = numpy.clip(pre_pose.pose.position.z + z_diff, -1, 1)
+            new_pose.pose.position.x = np.clip(pre_pose.pose.position.x + x_diff, -1, 1)
+            new_pose.pose.position.y = np.clip(pre_pose.pose.position.y + y_diff, -1, 1)
+            new_pose.pose.position.z = np.clip(pre_pose.pose.position.z + z_diff, -1, 1)
         
             # rotation        
+            """ # test Drehung um feste Raumachsen -> Drehachse wird beim Erreichen von Vielfachen von 90° geaendert
+            old_roll, old_pitch, old_yaw = tf.transformations.euler_from_quaternion(q, axes='sxyz')
+            alpha = 1
+            orientation_euler_new = np.array((old_roll, old_pitch, old_yaw))
+            alpha = roll
+            rot_x = ((1, 0, 0), 
+                      (0, math.cos(alpha), -math.sin(alpha)), 
+                      (0, math.sin(alpha), math.cos(alpha)))
+            alpha = pitch
+            rot_y = ((math.cos(alpha), 0, math.sin(alpha), ), 
+                      (0, 1, 0), 
+                      (-math.sin(alpha), 0, math.cos(alpha)))
+            alpha = yaw
+            rot_z = ((math.cos(alpha), -math.sin(alpha), 0 ), 
+                      (math.sin(alpha), math.cos(alpha), 0), 
+                      (0, 0, 1))
+            print(orientation_euler_new)
+            print('.....................')
+            orientation_euler_new = np.matmul(orientation_euler_new, rot_x)
+            orientation_euler_new = np.matmul(orientation_euler_new, rot_y)
+            orientation_euler_new = np.matmul(orientation_euler_new, rot_z)
+            print(orientation_euler_new)
+            new_q = tf.transformations.quaternion_from_euler(orientation_euler_new[0], orientation_euler_new[1], orientation_euler_new[2],axes='sxyz')
+            """
+
+            # not the real solution, but it works
             old_roll, old_pitch, old_yaw = tf.transformations.euler_from_quaternion(q, axes='sxyz')
             new_q = tf.transformations.quaternion_from_euler(roll+ old_roll, pitch + old_pitch, yaw + old_yaw, axes='sxyz')
+
             new_pose.pose.orientation.x = new_q[0]
             new_pose.pose.orientation.y = new_q[1]
             new_pose.pose.orientation.z = new_q[2]
@@ -417,87 +446,89 @@ class MyUI(QWidget):
                 self.current_planning_group_index = 0  # reset loop  
         
     def spacenav_thread(self):
-        try:
-            spnav_open()           
-            while self.app_running:   # condition to keep this thread running -> used to exit this thread                
-                event = spnav_wait_event()                     
-                if event != None:                    
-                    if not self.initialized:
-                        self.initialze_planning_group()  
-                    self.marker_lock.acquire()      
-                    if type(event) == SpnavMotionEvent: # one of the 6 DOF changed
-                        # translations:
-                            # translation[0] x -left +right
-                            # translation[2] y -backwards +forwards
-                            # translation[1] z -down +up  
-                            # left handed coordinate system!                      
-                        # rotations
-                            # rotation[0] x -tilt forwards +tilt backwards
-                            # rotation[2] y -tilt left + tilt right
-                            # rotation[1] z -tilt clockwise + tilt counterclockwise                        
-                        # all values between -350 to +350                               
-                        x_trans = (-1 if self.axes["x_trans"] else 1) * float(event.translation[0])/350/2*self.slider_sensitivity.value()
-                        y_trans = (-1 if self.axes["y_trans"] else 1) * float(event.translation[2])/350/2*self.slider_sensitivity.value() 
-                        z_trans = (-1 if self.axes["z_trans"] else 1) * float(event.translation[1])/350/2*self.slider_sensitivity.value()                          
-                        x_rot   = (-1 if self.axes["x_rot"] else 1) * float(event.rotation[0])/350/2*self.slider_sensitivity.value()
-                        y_rot   = (-1 if self.axes["y_rot"] else 1) * float(event.rotation[2])/350/2*self.slider_sensitivity.value()
-                        z_rot   = (-1 if self.axes["z_rot"] else 1) * float(event.rotation[1])/350/2*self.slider_sensitivity.value()                            
-                        if self.cb_swap_xy_rot.isChecked:
-                            buff = x_rot
-                            x_rot = y_rot
-                            y_rot = buff      
-                        # set csys
-                        if self.cb_csys.currentText() == self.csys["tcp"]:
-                            csys = 0
-                        elif self.cb_csys.currentText() == self.csys["world"]:
-                            csys = 1
-                        else:
-                            csys = -1            
-                        status = Status(x_trans, y_trans, z_trans, x_rot, y_rot, z_rot, csys)
-                        
-                        if self.cb_mode.currentText() == self.modes["moveit"]:  
-                            new_pose = self.computePoseFromSpaceNavigatorJoy(self.pre_pose, status)
-                            now = rospy.Time.from_sec(time.time())
-                            # placement.time_from_start = now - self.prev_time
-                            if (now - self.prev_time).to_sec() > 1 / 30.0:
-                                # rospy.loginfo(new_pose)
-                                self.pose_pub.publish(new_pose)
-                                self.joy_pose_pub.publish(new_pose)
-                                self.prev_time = now
-                            # sync start state to the real robot state
-                            self.counter = self.counter + 1
-                            self.pre_pose = new_pose
-                            self.update_pose_display(new_pose)                            
-                            # update self.initial_poses                            
-                            self.initial_poses[self.current_pose_topic.split("/")[-1]] = new_pose.pose 
-                        elif self.cb_mode.currentText() == self.modes["direct"]:
-                            # not implemented yet
-                            pass  
-                             
-                    if type(event) == SpnavButtonEvent:
-                        if self.cb_mode.currentText() == self.modes["moveit"]:  
-                            if event.bnum == 0 and event.press == 1:# [0] button left, [1] button right  
-                                rospy.loginfo("Plan")
-                                self.plan_pub.publish(Empty())               
-                            elif event.bnum == 1 and event.press == 1:
-                                rospy.loginfo("Execute")
-                                self.execute_pub.publish(Empty()) 
-                        elif self.cb_mode.currentText() == self.modes["direct"]:
-                            # not implemented yet
-                            pass  
-                    self.marker_lock.release()   
-        except Exception as e:
-            print(e)
+        spnav_open()           
+        while self.app_running:   # condition to keep this thread running -> used to exit this thread                
+            event = spnav_poll_event()                     
+            if event != None:                    
+                if not self.initialized:
+                    self.initialze_planning_group()  
+                self.marker_lock.acquire()      
+                if type(event) == SpnavMotionEvent: # one of the 6 DOF changed
+                    # translations:
+                        # translation[0] x -left +right
+                        # translation[2] y -backwards +forwards
+                        # translation[1] z -down +up  
+                        # left handed coordinate system!                      
+                    # rotations
+                        # rotation[0] x -tilt forwards +tilt backwards
+                        # rotation[2] y -tilt left + tilt right
+                        # rotation[1] z -tilt clockwise + tilt counterclockwise                        
+                    # all values between -350 to +350                               
+                    x_trans = (-1 if self.axes["x_trans"] else 1) * float(event.translation[0])/350/2*self.slider_sensitivity.value()
+                    y_trans = (-1 if self.axes["y_trans"] else 1) * float(event.translation[2])/350/2*self.slider_sensitivity.value() 
+                    z_trans = (-1 if self.axes["z_trans"] else 1) * float(event.translation[1])/350/2*self.slider_sensitivity.value()                          
+                    x_rot   = (-1 if self.axes["x_rot"] else 1) * float(event.rotation[0])/350/2*self.slider_sensitivity.value()
+                    y_rot   = (-1 if self.axes["y_rot"] else 1) * float(event.rotation[2])/350/2*self.slider_sensitivity.value()
+                    z_rot   = (-1 if self.axes["z_rot"] else 1) * float(event.rotation[1])/350/2*self.slider_sensitivity.value()                            
+                    if self.cb_swap_xy_rot.isChecked:
+                        buff = x_rot
+                        x_rot = y_rot
+                        y_rot = buff      
+                    # set csys
+                    if self.cb_csys.currentText() == self.csys["tcp"]:
+                        csys = 0
+                    elif self.cb_csys.currentText() == self.csys["world"]:
+                        csys = 1
+                    else:
+                        csys = -1            
+                    status = Status(x_trans, y_trans, z_trans, x_rot, y_rot, z_rot, csys)
+                    
+                    if self.cb_mode.currentText() == self.modes["moveit"]:  
+                        new_pose = self.computePoseFromSpaceNavigatorJoy(self.pre_pose, status)
+                        now = rospy.Time.from_sec(time.time())
+                        # placement.time_from_start = now - self.prev_time
+                        if (now - self.prev_time).to_sec() > 1 / 30.0:
+                            # rospy.loginfo(new_pose)
+                            self.pose_pub.publish(new_pose)
+                            self.joy_pose_pub.publish(new_pose)
+                            self.prev_time = now
+                        # sync start state to the real robot state
+                        self.counter = self.counter + 1
+                        self.pre_pose = new_pose
+                        self.update_pose_display(new_pose)                            
+                        # update self.initial_poses                            
+                        self.initial_poses[self.current_pose_topic.split("/")[-1]] = new_pose.pose 
+                    elif self.cb_mode.currentText() == self.modes["direct"]:
+                        # not implemented yet
+                        pass  
+                            
+                if type(event) == SpnavButtonEvent:
+                    if self.cb_mode.currentText() == self.modes["moveit"]:  
+                        if event.bnum == 0 and event.press == 1:# [0] button left, [1] button right  
+                            rospy.loginfo("Plan")
+                            self.plan_pub.publish(Empty())               
+                        elif event.bnum == 1 and event.press == 1:
+                            rospy.loginfo("Execute")
+                            self.execute_pub.publish(Empty()) 
+                    elif self.cb_mode.currentText() == self.modes["direct"]:
+                        # not implemented yet
+                        pass  
+                self.marker_lock.release()  
+                spnav_remove_events(SPNAV_EVENT_ANY)
         spnav_close()
         
-    def update_pose_display(self, new_pose):
+    def update_pose_display(self, new_pose: PoseStamped):
         self.lbl_x_trans.setText("{:.3f}".format(float(new_pose.pose.position.x)))
         self.lbl_y_trans.setText("{:.3f}".format(float(new_pose.pose.position.y)))
         self.lbl_z_trans.setText("{:.3f}".format(float(new_pose.pose.position.z)))
-        self.lbl_x_rot.setText("{:.3f}".format(float(new_pose.pose.orientation.x)))
-        self.lbl_y_rot.setText("{:.3f}".format(float(new_pose.pose.orientation.y)))
-        self.lbl_z_rot.setText("{:.3f}".format(float(new_pose.pose.orientation.z)))
-        
+        q = np.array((new_pose.pose.orientation.x,
+                      new_pose.pose.orientation.y,
+                      new_pose.pose.orientation.z,
+                      new_pose.pose.orientation.w,))
+        rx, ry, rz = tf.transformations.euler_from_quaternion(q)
+        self.lbl_x_rot.setText("{:.3f}".format(rx))
+        self.lbl_y_rot.setText("{:.3f}".format(ry))
+        self.lbl_z_rot.setText("{:.3f}".format(rz))
     def on_exit(self):
         self.app_running = False 
         self.spnav_thread.join()  
@@ -506,11 +537,8 @@ if __name__ == '__main__':
     try:
         app = QApplication(sys.argv)
         ui = MyUI()
-        #pub_thread = threading.Thread(target=ui.spacenav_thread) 
-        #pub_thread.start()
         app.aboutToQuit.connect(ui.on_exit)       
         app.exec_()
-        #pub_thread.join()
     except rospy.ROSInterruptException:
         pass
     sys.exit()
